@@ -18,7 +18,7 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 #[derive(Parser)]
-#[command(name = "claude-sessions", about = "Interactive explorer for Claude Code sessions")]
+#[command(name = "claude-continue", about = "Interactive explorer for Claude Code sessions")]
 struct Cli {
     /// Search all sessions
     #[arg(short, long, value_name = "QUERY", num_args = 0..=1, default_missing_value = "")]

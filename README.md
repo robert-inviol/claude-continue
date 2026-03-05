@@ -1,4 +1,4 @@
-# claude-sessions
+# claude-continue
 
 Interactive TUI explorer for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions.
 
@@ -21,29 +21,38 @@ Browse, search, and resume your Claude Code sessions from the terminal.
 
 ## Install
 
-### From source (Rust)
+### Quick install
+
+```sh
+./install.sh
+```
+
+This builds the release binary, installs it to `~/.local/bin/claude-continue`, and adds a `cc` alias to your shell profile.
+
+### Manual install (Rust)
 
 ```sh
 cargo build --release
-cp target/release/claude-sessions-tui ~/.local/bin/claude-sessions
+cp target/release/claude-continue ~/.local/bin/
 ```
 
 ### Bash version (original)
 
-The original bash script is included as `claude-sessions` for reference. It requires `gum`, `fzf`, and `python3`.
+The original bash script is included as `claude-continue.sh` for reference. It requires `gum`, `fzf`, and `python3`.
 
 ```sh
-cp claude-sessions ~/.local/bin/claude-sessions
+cp claude-continue.sh ~/.local/bin/claude-continue
 ```
 
 ## Usage
 
 ```
-claude-sessions              # interactive browser (scoped to cwd if applicable)
-claude-sessions --search     # search all sessions
-claude-sessions --search foo # search with initial query
-claude-sessions --id abc123  # look up session by ID fragment
-claude-sessions abc123       # shorthand for --id / --search
+claude-continue              # interactive browser (scoped to cwd if applicable)
+claude-continue --search     # search all sessions
+claude-continue --search foo # search with initial query
+claude-continue --id abc123  # look up session by ID fragment
+claude-continue abc123       # shorthand for --id / --search
+cc                           # alias (added by install.sh)
 ```
 
 ## Keybindings
