@@ -1,9 +1,9 @@
-use crate::app::{App, View, DETAIL_MENU_ITEMS};
+use crate::app::{App, View};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -26,12 +26,6 @@ pub fn draw(f: &mut Frame, app: &App) {
         View::SessionList {
             project_label, ..
         } => draw_session_list(f, app, size, project_label),
-        View::SessionDetail { session } => {
-            draw_session_detail(f, app, size, session)
-        }
-        View::Conversation { messages, scroll } => {
-            draw_conversation(f, size, messages, *scroll)
-        }
         View::ConfirmDelete { session, .. } => {
             draw_confirm_delete(f, app, size, session)
         }
@@ -52,19 +46,29 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
-fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
+enum ActiveTab {
+    Folders,
+    Recent,
+    Project(String),
+}
+
+fn draw_chrome(f: &mut Frame, area: Rect, app: &App, active: &ActiveTab) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // header
-            Constraint::Length(2), // tab bar + help
-            Constraint::Min(1),   // list
+            Constraint::Length(2), // tab bar
+            Constraint::Min(1),   // content
             Constraint::Length(1), // filter
         ])
         .split(area);
 
     // Header
-    let header = Paragraph::new("  Claude Sessions  ")
+    let title = match active {
+        ActiveTab::Project(label) => format!("  {}  ", label),
+        _ => "  Claude Sessions  ".to_string(),
+    };
+    let header = Paragraph::new(title)
         .style(
             Style::default()
                 .fg(PINK)
@@ -78,44 +82,37 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(header, chunks[0]);
 
     // Tab bar
-    let tabs = Line::from(vec![
-        Span::styled(
-            " Folders ",
-            Style::default()
-                .fg(PINK)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ),
-        Span::styled(" | ", Style::default().fg(DIM)),
-        Span::styled(" Recent ", Style::default().fg(DIM)),
-        Span::styled(
-            "          tab: switch  enter: open  /: filter  esc: quit",
+    let (folders_style, recent_style) = match active {
+        ActiveTab::Folders => (
+            Style::default().fg(PINK).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             Style::default().fg(DIM),
         ),
+        ActiveTab::Recent => (
+            Style::default().fg(DIM),
+            Style::default().fg(PINK).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ),
+        ActiveTab::Project(_) => (
+            Style::default().fg(DIM),
+            Style::default().fg(DIM),
+        ),
+    };
+
+    let help = match active {
+        ActiveTab::Folders | ActiveTab::Project(_) => {
+            "      tab: switch  enter: resume/new  d: delete  /: filter  esc: back"
+        }
+        ActiveTab::Recent => {
+            "      enter: resume/new  d: delete  /: filter  esc: quit"
+        }
+    };
+
+    let tabs = Line::from(vec![
+        Span::styled(" Folders ", folders_style),
+        Span::styled(" | ", Style::default().fg(DIM)),
+        Span::styled(" Recent ", recent_style),
+        Span::styled(help, Style::default().fg(DIM)),
     ]);
     f.render_widget(Paragraph::new(tabs), chunks[1]);
-
-    // Project list
-    let items: Vec<ListItem> = app
-        .filtered
-        .iter()
-        .enumerate()
-        .map(|(i, &idx)| {
-            let p = &app.projects[idx];
-            let content = format!(
-                "{:<45}  {:>3} sessions  {}",
-                p.display_path, p.session_count, p.time_ago
-            );
-            let style = if i == app.selected {
-                Style::default().fg(BLUE).bg(SURFACE)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            ListItem::new(content).style(style)
-        })
-        .collect();
-
-    let list = List::new(items);
-    f.render_widget(list, chunks[2]);
 
     // Filter bar
     if app.filtering {
@@ -123,54 +120,60 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().fg(YELLOW));
         f.render_widget(filter, chunks[3]);
     }
+
+    chunks[2] // return content area
+}
+
+fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
+    let content = draw_chrome(f, area, app, &ActiveTab::Folders);
+
+    let list_width = content.width as usize;
+    let path_width = list_width.saturating_sub(28);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    {
+        let style = if app.selected == 0 {
+            Style::default().fg(GREEN).bg(SURFACE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(GREEN)
+        };
+        items.push(ListItem::new("+ New session").style(style));
+    }
+
+    let project_items: Vec<ListItem> = app
+        .filtered
+        .iter()
+        .enumerate()
+        .map(|(i, &idx)| {
+            let p = &app.projects[idx];
+            let content = format!(
+                "{:<pw$}  {:>3} sessions  {}",
+                p.display_path, p.session_count, p.time_ago,
+                pw = path_width
+            );
+            let style = if i + 1 == app.selected {
+                Style::default().fg(BLUE).bg(SURFACE)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            ListItem::new(content).style(style)
+        })
+        .collect();
+    items.extend(project_items);
+
+    f.render_widget(List::new(items), content);
 }
 
 fn draw_recent_sessions(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    let content = draw_chrome(f, area, app, &ActiveTab::Recent);
 
-    let header = Paragraph::new("  Claude Sessions  ")
-        .style(
-            Style::default()
-                .fg(PINK)
-                .add_modifier(Modifier::BOLD),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BLUE)),
-        );
-    f.render_widget(header, chunks[0]);
-
-    let tabs = Line::from(vec![
-        Span::styled(" Folders ", Style::default().fg(DIM)),
-        Span::styled(" | ", Style::default().fg(DIM)),
-        Span::styled(
-            " Recent ",
-            Style::default()
-                .fg(PINK)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ),
-        Span::styled(
-            "      enter: resume  del: delete  right: details  /: filter  esc: quit",
-            Style::default().fg(DIM),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(tabs), chunks[1]);
-
-    draw_session_items(f, app, chunks[2], true);
-
-    if app.filtering {
-        let filter = Paragraph::new(format!("/{}", app.filter_text))
+    if app.loading {
+        let loading = Paragraph::new("  Loading sessions...")
             .style(Style::default().fg(YELLOW));
-        f.render_widget(filter, chunks[3]);
+        f.render_widget(loading, content);
+    } else {
+        draw_session_items(f, app, content, true);
     }
 }
 
@@ -180,48 +183,8 @@ fn draw_session_list(
     area: Rect,
     project_label: &str,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    let header = Paragraph::new(format!("  {}  ", project_label))
-        .style(
-            Style::default()
-                .fg(PINK)
-                .add_modifier(Modifier::BOLD),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BLUE)),
-        );
-    f.render_widget(header, chunks[0]);
-
-    let help = Line::from(vec![
-        Span::styled(
-            format!("{} sessions  ", app.sessions.len()),
-            Style::default().fg(DIM),
-        ),
-        Span::styled(
-            "enter: resume  del: delete  right: details  /: filter  esc: back",
-            Style::default().fg(DIM),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(help), chunks[1]);
-
-    draw_session_items(f, app, chunks[2], false);
-
-    if app.filtering {
-        let filter = Paragraph::new(format!("/{}", app.filter_text))
-            .style(Style::default().fg(YELLOW));
-        f.render_widget(filter, chunks[3]);
-    }
+    let content = draw_chrome(f, area, app, &ActiveTab::Project(project_label.to_string()));
+    draw_session_items(f, app, content, false);
 }
 
 fn draw_session_items(
@@ -230,21 +193,59 @@ fn draw_session_items(
     area: Rect,
     show_project: bool,
 ) {
-    let items: Vec<ListItem> = app
+    let has_dotdot = !show_project;
+    let header_rows = app.header_rows();
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // "+ New session" always first
+    {
+        let style = if app.selected == 0 {
+            Style::default().fg(GREEN).bg(SURFACE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(GREEN)
+        };
+        items.push(ListItem::new("+ New session").style(style));
+    }
+
+    // ".." for per-project view
+    if has_dotdot {
+        let style = if app.selected == 1 {
+            Style::default().fg(BLUE).bg(SURFACE)
+        } else {
+            Style::default().fg(DIM)
+        };
+        items.push(ListItem::new("..").style(style));
+    }
+
+    let width = area.width as usize;
+    let fixed_cols = 42;
+    let remaining = width.saturating_sub(fixed_cols);
+
+    let (proj_width, msg_width) = if show_project {
+        let pw = (remaining * 30 / 100).max(15);
+        let mw = remaining.saturating_sub(pw + 2);
+        (pw, mw)
+    } else {
+        (0, remaining)
+    };
+
+    let session_items: Vec<ListItem> = app
         .filtered
         .iter()
         .enumerate()
         .map(|(i, &idx)| {
             let s = &app.sessions[idx];
             let msg_display: String =
-                s.first_msg.chars().take(55).collect();
+                s.first_msg.chars().take(msg_width).collect();
             let project_col = if show_project {
-                let label: String = if s.cwd.len() > 20 {
-                    format!("..{}", &s.cwd[s.cwd.len().saturating_sub(18)..])
+                let label: String = if s.cwd.chars().count() > proj_width {
+                    let skip = s.cwd.chars().count().saturating_sub(proj_width - 2);
+                    format!("..{}", s.cwd.chars().skip(skip).collect::<String>())
                 } else {
                     s.cwd.clone()
                 };
-                format!("  {:<20}", label)
+                format!("  {:<pw$}", label, pw = proj_width)
             } else {
                 String::new()
             };
@@ -257,7 +258,7 @@ fn draw_session_items(
                 project_col,
                 msg_display
             );
-            let style = if i == app.selected {
+            let style = if i + header_rows == app.selected {
                 Style::default().fg(BLUE).bg(SURFACE)
             } else {
                 Style::default().fg(TEXT)
@@ -266,7 +267,9 @@ fn draw_session_items(
         })
         .collect();
 
-    // Calculate offset to keep selection visible
+    items.extend(session_items);
+
+    // Scroll to keep selection visible
     let visible_height = area.height as usize;
     let offset = if app.selected >= visible_height {
         app.selected - visible_height + 1
@@ -274,207 +277,10 @@ fn draw_session_items(
         0
     };
 
-    let items_to_show: Vec<ListItem> = items
-        .into_iter()
-        .skip(offset)
-        .collect();
+    let items_to_show: Vec<ListItem> = items.into_iter().skip(offset).collect();
 
     let list = List::new(items_to_show);
     f.render_widget(list, area);
-}
-
-fn draw_session_detail(
-    f: &mut Frame,
-    app: &App,
-    area: Rect,
-    session: &crate::data::SessionInfo,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),  // header
-            Constraint::Length(3),  // first message
-            Constraint::Length(10), // details
-            Constraint::Min(1),    // menu
-        ])
-        .split(area);
-
-    // Header
-    let header = Paragraph::new("  Session Detail  ")
-        .style(
-            Style::default()
-                .fg(PINK)
-                .add_modifier(Modifier::BOLD),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BLUE)),
-        );
-    f.render_widget(header, chunks[0]);
-
-    // First message
-    let msg_lines = vec![
-        Line::from(Span::styled(
-            "First message:",
-            Style::default()
-                .fg(BLUE)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!("  \"{}\"", session.first_msg),
-            Style::default()
-                .fg(GREEN)
-                .add_modifier(Modifier::ITALIC),
-        )),
-    ];
-    f.render_widget(Paragraph::new(msg_lines), chunks[1]);
-
-    // Details
-    let started = if session.first_ts.is_empty() {
-        "unknown".to_string()
-    } else {
-        format!("{} ({})", session.first_ts_ago, session.first_ts)
-    };
-    let last = if session.last_ts.is_empty() {
-        "unknown".to_string()
-    } else {
-        format!("{} ({})", session.last_ts_ago, session.last_ts)
-    };
-
-    let detail_lines = vec![
-        Line::from(Span::styled(
-            format!("  {:<16} {}", "Session ID:", session.session_id),
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            format!("  {:<16} {}", "Working Dir:", session.cwd),
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            format!("  {:<16} {}", "Model:", session.model),
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            format!("  {:<16} {}", "Started:", started),
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            format!("  {:<16} {}", "Last Activity:", last),
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            format!(
-                "  {:<16} {} user / {} assistant ({} total)",
-                "Messages:",
-                session.user_msgs,
-                session.assistant_msgs,
-                session.total_msgs
-            ),
-            Style::default().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            format!("  {:<16} {}", "Log Size:", session.file_size),
-            Style::default().fg(DIM),
-        )),
-    ];
-    f.render_widget(Paragraph::new(detail_lines), chunks[2]);
-
-    // Menu
-    let menu_items: Vec<ListItem> = DETAIL_MENU_ITEMS
-        .iter()
-        .enumerate()
-        .map(|(i, &item)| {
-            let style = if i == app.detail_menu_idx {
-                Style::default().fg(BLUE).bg(SURFACE)
-            } else {
-                Style::default().fg(TEXT)
-            };
-            ListItem::new(format!("  {}", item)).style(style)
-        })
-        .collect();
-
-    let menu = List::new(menu_items);
-    f.render_widget(menu, chunks[3]);
-}
-
-fn draw_conversation(
-    f: &mut Frame,
-    area: Rect,
-    messages: &[crate::data::ConversationMessage],
-    scroll: usize,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    let header = Paragraph::new("  Conversation  ")
-        .style(
-            Style::default()
-                .fg(PINK)
-                .add_modifier(Modifier::BOLD),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BLUE)),
-        );
-    f.render_widget(header, chunks[0]);
-
-    let mut lines: Vec<Line> = Vec::new();
-    for msg in messages {
-        let ts_short = if msg.timestamp.len() > 16 {
-            &msg.timestamp[11..16]
-        } else {
-            ""
-        };
-
-        let (prefix_style, prefix_text) = if msg.role == "user" {
-            (
-                Style::default()
-                    .fg(BLUE)
-                    .add_modifier(Modifier::BOLD),
-                format!("[{}] You:", ts_short),
-            )
-        } else {
-            (
-                Style::default()
-                    .fg(GREEN)
-                    .add_modifier(Modifier::BOLD),
-                format!("[{}] Claude:", ts_short),
-            )
-        };
-
-        lines.push(Line::from(Span::styled(prefix_text, prefix_style)));
-
-        let text = if msg.role == "assistant" && msg.text.len() > 800 {
-            format!("{}...", &msg.text[..797])
-        } else {
-            msg.text.clone()
-        };
-
-        for line in text.lines() {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", line),
-                Style::default().fg(TEXT),
-            )));
-        }
-        lines.push(Line::from(""));
-    }
-
-    let para = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
-    f.render_widget(para, chunks[1]);
-
-    let help = Paragraph::new("  Up/Down: scroll  Esc/q: back")
-        .style(Style::default().fg(DIM));
-    f.render_widget(help, chunks[2]);
 }
 
 fn draw_confirm_delete(

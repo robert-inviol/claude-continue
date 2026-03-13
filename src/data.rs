@@ -32,13 +32,6 @@ pub struct SessionInfo {
     pub jsonl_path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConversationMessage {
-    pub role: String,
-    pub text: String,
-    pub timestamp: String,
-}
-
 pub fn projects_dir() -> PathBuf {
     dirs::home_dir()
         .expect("no home directory")
@@ -374,98 +367,6 @@ pub fn list_all_sessions() -> Vec<SessionInfo> {
         .map(|(_, p)| scan_session(p))
         .filter(|s| s.total_msgs > 0)
         .collect()
-}
-
-pub fn read_conversation(path: &Path) -> Vec<ConversationMessage> {
-    let mut messages = Vec::new();
-    let Ok(content) = fs::read_to_string(path) else {
-        return messages;
-    };
-
-    for line in content.lines() {
-        let obj: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let t = obj
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let ts = obj
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        match t {
-            "user" => {
-                if let Some(msg) = obj
-                    .pointer("/message/content")
-                    .and_then(|v| v.as_str())
-                {
-                    let trimmed = msg.trim();
-                    if !trimmed.is_empty() {
-                        messages.push(ConversationMessage {
-                            role: "user".to_string(),
-                            text: trimmed.to_string(),
-                            timestamp: ts,
-                        });
-                    }
-                }
-            }
-            "assistant" => {
-                let content_parts = obj.pointer("/message/content");
-                let mut text_parts = Vec::new();
-                let mut tool_parts = Vec::new();
-
-                if let Some(Value::Array(parts)) = content_parts {
-                    for part in parts {
-                        if let Some(ptype) = part.get("type").and_then(|v| v.as_str()) {
-                            match ptype {
-                                "text" => {
-                                    if let Some(text) =
-                                        part.get("text").and_then(|v| v.as_str())
-                                    {
-                                        let trimmed = text.trim();
-                                        if !trimmed.is_empty() {
-                                            text_parts.push(trimmed.to_string());
-                                        }
-                                    }
-                                }
-                                "tool_use" => {
-                                    let name = part
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    tool_parts.push(format!("[tool: {}]", name));
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-
-                let combined = if text_parts.is_empty() && !tool_parts.is_empty() {
-                    tool_parts.join(" ")
-                } else if !tool_parts.is_empty() {
-                    format!("{}  {}", text_parts.join(" "), tool_parts.join(" "))
-                } else {
-                    text_parts.join(" ")
-                };
-
-                if !combined.is_empty() {
-                    messages.push(ConversationMessage {
-                        role: "assistant".to_string(),
-                        text: combined,
-                        timestamp: ts,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    messages
 }
 
 pub fn cwd_to_project_dir(cwd: &str) -> Option<String> {

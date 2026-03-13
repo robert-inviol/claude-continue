@@ -1,4 +1,4 @@
-use crate::data::{self, ConversationMessage, Project, SessionInfo};
+use crate::data::{self, Project, SessionInfo};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
@@ -7,13 +7,6 @@ pub enum View {
     SessionList {
         project_dir: String,
         project_label: String,
-    },
-    SessionDetail {
-        session: SessionInfo,
-    },
-    Conversation {
-        messages: Vec<ConversationMessage>,
-        scroll: usize,
     },
     ConfirmDelete {
         session: SessionInfo,
@@ -33,7 +26,8 @@ pub struct App {
     pub quit: bool,
     pub launch: Option<LaunchAction>,
     pub status_msg: Option<String>,
-    pub detail_menu_idx: usize,
+    pub loading: bool,
+    pub launch_cwd: String,
 }
 
 #[derive(Debug, Clone)]
@@ -42,17 +36,12 @@ pub struct LaunchAction {
     pub resume_id: Option<String>,
 }
 
-pub const DETAIL_MENU_ITEMS: &[&str] = &[
-    "Resume session",
-    "New session in this directory",
-    "View conversation",
-    "Copy session ID",
-    "Delete session",
-    "Back",
-];
-
 impl App {
     pub fn new() -> Self {
+        let launch_cwd = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         App {
             view: View::ProjectList,
             view_stack: Vec::new(),
@@ -65,7 +54,8 @@ impl App {
             quit: false,
             launch: None,
             status_msg: None,
-            detail_menu_idx: 0,
+            loading: false,
+            launch_cwd,
         }
     }
 
@@ -100,8 +90,7 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
             }
-            View::RecentSessions
-            | View::SessionList { .. } => {
+            View::RecentSessions | View::SessionList { .. } => {
                 self.filtered = self
                     .sessions
                     .iter()
@@ -117,29 +106,53 @@ impl App {
             }
             _ => {}
         }
-        if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len().saturating_sub(1);
+        // +1 for the "New session" row in session views
+        let total = self.total_rows();
+        if self.selected >= total && total > 0 {
+            self.selected = total - 1;
+        }
+    }
+
+    /// Number of special rows before data items.
+    /// ProjectList: "New session" = 1
+    /// SessionList: "New session" + ".." = 2
+    /// RecentSessions: "New session" = 1
+    pub fn header_rows(&self) -> usize {
+        match &self.view {
+            View::SessionList { .. } => 2,
+            View::ProjectList | View::RecentSessions => 1,
+            _ => 0,
+        }
+    }
+
+    fn total_rows(&self) -> usize {
+        self.header_rows() + self.filtered.len()
+    }
+
+    /// Get the session index for the currently selected item,
+    /// returning None if on a special row (.., New session).
+    fn selected_session_idx(&self) -> Option<usize> {
+        let hr = self.header_rows();
+        if self.selected < hr {
+            return None;
+        }
+        self.filtered.get(self.selected - hr).copied()
+    }
+
+    /// Check if "New session" row is currently selected (always row 0).
+    fn is_new_session_selected(&self) -> bool {
+        match &self.view {
+            View::ProjectList | View::SessionList { .. } | View::RecentSessions => {
+                self.selected == 0
+            }
+            _ => false,
         }
     }
 
     pub fn move_up(&mut self) {
         match &self.view {
-            View::SessionDetail { .. } => {
-                if self.detail_menu_idx > 0 {
-                    self.detail_menu_idx -= 1;
-                }
-            }
-            View::Conversation { scroll, messages, .. } => {
-                if *scroll > 0 {
-                    let msgs = messages.clone();
-                    self.view = View::Conversation {
-                        messages: msgs,
-                        scroll: scroll.saturating_sub(3),
-                    };
-                }
-            }
             View::ConfirmDelete { .. } => {
-                self.selected = if self.selected > 0 { 0 } else { 0 };
+                self.selected = 0;
             }
             _ => {
                 if self.selected > 0 {
@@ -151,22 +164,11 @@ impl App {
 
     pub fn move_down(&mut self) {
         match &self.view {
-            View::SessionDetail { .. } => {
-                if self.detail_menu_idx < DETAIL_MENU_ITEMS.len() - 1 {
-                    self.detail_menu_idx += 1;
-                }
-            }
-            View::Conversation { scroll, messages, .. } => {
-                self.view = View::Conversation {
-                    messages: messages.clone(),
-                    scroll: scroll + 3,
-                };
-            }
             View::ConfirmDelete { .. } => {
-                self.selected = if self.selected < 1 { 1 } else { 1 };
+                self.selected = 1;
             }
             _ => {
-                let max = self.filtered.len().saturating_sub(1);
+                let max = self.total_rows().saturating_sub(1);
                 if self.selected < max {
                     self.selected += 1;
                 }
@@ -181,7 +183,6 @@ impl App {
         self.selected = 0;
         self.filter_text.clear();
         self.filtering = false;
-        self.detail_menu_idx = 0;
     }
 
     pub fn pop_view(&mut self) {
@@ -190,7 +191,6 @@ impl App {
             self.selected = 0;
             self.filter_text.clear();
             self.filtering = false;
-            // Reload data for the view we're returning to
             match &self.view {
                 View::ProjectList => self.load_projects(),
                 View::RecentSessions => self.load_all_sessions(),
@@ -208,7 +208,11 @@ impl App {
     pub fn enter_selection(&mut self) {
         match self.view.clone() {
             View::ProjectList => {
-                if let Some(&idx) = self.filtered.get(self.selected) {
+                if self.is_new_session_selected() {
+                    self.launch_new_session();
+                    return;
+                }
+                if let Some(&idx) = self.filtered.get(self.selected - 1) {
                     let proj = &self.projects[idx];
                     let dir_name = proj.dir_name.clone();
                     let label = proj.display_path.clone();
@@ -219,110 +223,108 @@ impl App {
                     self.load_sessions_for_project(&dir_name);
                 }
             }
-            View::RecentSessions | View::SessionList { .. } => {
-                if let Some(&idx) = self.filtered.get(self.selected) {
-                    let session = self.sessions[idx].clone();
-                    let cwd = session.cwd.replace("~", &dirs::home_dir().unwrap_or_default().to_string_lossy());
-                    self.launch = Some(LaunchAction {
-                        cwd,
-                        resume_id: Some(session.session_id.clone()),
-                    });
+            View::SessionList { .. } => {
+                if self.is_new_session_selected() {
+                    self.launch_new_session();
+                } else if self.selected == 1 {
+                    // ".." — go back to project list
+                    self.view_stack.clear();
+                    self.view = View::ProjectList;
+                    self.selected = 0;
+                    self.filter_text.clear();
+                    self.filtering = false;
+                    self.load_projects();
+                } else {
+                    self.resume_selected();
                 }
             }
-            View::SessionDetail { ref session } => {
-                let session = session.clone();
-                match DETAIL_MENU_ITEMS[self.detail_menu_idx] {
-                    "Resume session" => {
-                        let cwd = session.cwd.replace("~", &dirs::home_dir().unwrap_or_default().to_string_lossy());
-                        self.launch = Some(LaunchAction {
-                            cwd,
-                            resume_id: Some(session.session_id.clone()),
-                        });
-                    }
-                    "New session in this directory" => {
-                        let cwd = session.cwd.replace("~", &dirs::home_dir().unwrap_or_default().to_string_lossy());
-                        self.launch = Some(LaunchAction {
-                            cwd,
-                            resume_id: None,
-                        });
-                    }
-                    "View conversation" => {
-                        let messages = data::read_conversation(&session.jsonl_path);
-                        self.push_view(View::Conversation {
-                            messages,
-                            scroll: 0,
-                        });
-                    }
-                    "Copy session ID" => {
-                        copy_to_clipboard(&session.session_id);
-                        self.status_msg =
-                            Some(format!("Copied: {}", session.session_id));
-                    }
-                    "Delete session" => {
-                        let return_view = Box::new(self.view.clone());
-                        self.push_view(View::ConfirmDelete {
-                            session,
-                            return_view,
-                        });
-                        self.selected = 1; // default to No
-                    }
-                    "Back" => {
-                        self.pop_view();
-                    }
-                    _ => {}
+            View::RecentSessions => {
+                if self.is_new_session_selected() {
+                    self.launch_new_session();
+                } else {
+                    self.resume_selected();
                 }
             }
-            View::ConfirmDelete {
-                ref session,
-                ..
-            } => {
+            View::ConfirmDelete { ref session, .. } => {
                 if self.selected == 0 {
-                    // Yes - delete
                     let _ = std::fs::remove_file(&session.jsonl_path);
                     let dir = session.jsonl_path.with_extension("");
                     let _ = std::fs::remove_dir_all(&dir);
                     self.status_msg = Some("Session deleted.".to_string());
-                    // Pop the confirm view
-                    self.view_stack.pop();
-                    // Pop back past the detail view too
                     self.pop_view();
                 } else {
-                    // No - go back
-                    self.view_stack.pop(); // remove confirm from stack
                     self.pop_view();
-                    // Re-enter detail
                 }
             }
-            View::Conversation { .. } => {}
         }
     }
 
-    pub fn show_detail_for_selected(&mut self) {
-        match &self.view {
-            View::RecentSessions | View::SessionList { .. } => {
-                if let Some(&idx) = self.filtered.get(self.selected) {
-                    let session = self.sessions[idx].clone();
-                    self.push_view(View::SessionDetail { session });
+    fn resume_selected(&mut self) {
+        if let Some(idx) = self.selected_session_idx() {
+            let session = &self.sessions[idx];
+            let cwd = session.cwd.replace(
+                "~",
+                &dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            );
+            self.launch = Some(LaunchAction {
+                cwd,
+                resume_id: Some(session.session_id.clone()),
+            });
+        }
+    }
+
+    fn launch_new_session(&mut self) {
+        // Use the project cwd if in a project session list, otherwise launch cwd
+        let cwd = match &self.view {
+            View::SessionList { .. } => {
+                if let Some(first) = self.sessions.first() {
+                    first.cwd.replace(
+                        "~",
+                        &dirs::home_dir()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                    )
+                } else {
+                    self.launch_cwd.clone()
                 }
             }
-            _ => {}
+            _ => self.launch_cwd.clone(),
+        };
+        self.launch = Some(LaunchAction {
+            cwd,
+            resume_id: None,
+        });
+    }
+
+    pub fn new_session(&mut self) {
+        if let Some(idx) = self.selected_session_idx() {
+            let session = &self.sessions[idx];
+            let cwd = session.cwd.replace(
+                "~",
+                &dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            );
+            self.launch = Some(LaunchAction {
+                cwd,
+                resume_id: None,
+            });
+        } else {
+            self.launch_new_session();
         }
     }
 
     pub fn delete_selected(&mut self) {
-        match &self.view {
-            View::RecentSessions | View::SessionList { .. } => {
-                if let Some(&idx) = self.filtered.get(self.selected) {
-                    let session = self.sessions[idx].clone();
-                    let return_view = Box::new(self.view.clone());
-                    self.push_view(View::ConfirmDelete {
-                        session,
-                        return_view,
-                    });
-                    self.selected = 1; // default to No
-                }
-            }
-            _ => {}
+        if let Some(idx) = self.selected_session_idx() {
+            let session = self.sessions[idx].clone();
+            let return_view = Box::new(self.view.clone());
+            self.push_view(View::ConfirmDelete {
+                session,
+                return_view,
+            });
+            self.selected = 1; // default to No
         }
     }
 
@@ -332,7 +334,9 @@ impl App {
                 self.view = View::RecentSessions;
                 self.selected = 0;
                 self.filter_text.clear();
-                self.load_all_sessions();
+                self.sessions.clear();
+                self.filtered.clear();
+                self.loading = true;
             }
             View::RecentSessions => {
                 self.view = View::ProjectList;
@@ -343,30 +347,16 @@ impl App {
             _ => {}
         }
     }
-}
 
-fn copy_to_clipboard(text: &str) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    // Try wl-copy, xclip, xsel in order
-    for (cmd, args) in [
-        ("wl-copy", vec![]),
-        ("xclip", vec!["-selection", "clipboard"]),
-        ("xsel", vec!["--clipboard", "--input"]),
-    ] {
-        if let Ok(mut child) = Command::new(cmd)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            let _ = child.wait();
+    pub fn finish_loading(&mut self) {
+        if !self.loading {
             return;
+        }
+        self.loading = false;
+        match &self.view {
+            View::RecentSessions => self.load_all_sessions(),
+            _ => {}
         }
     }
 }
+
