@@ -99,10 +99,10 @@ fn draw_chrome(f: &mut Frame, area: Rect, app: &App, active: &ActiveTab) -> Rect
 
     let help = match active {
         ActiveTab::Folders | ActiveTab::Project(_) => {
-            "      tab: switch  enter: resume/new  d: delete  /: filter  esc: back"
+            "      tab: switch  enter: resume/new  d/D: delete  /: filter  esc: back"
         }
         ActiveTab::Recent => {
-            "      enter: resume/new  d: delete  /: filter  esc: quit"
+            "      enter: resume/new  d/D: delete  /: filter  esc: quit"
         }
     };
 

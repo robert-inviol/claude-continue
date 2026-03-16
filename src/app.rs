@@ -328,6 +328,25 @@ impl App {
         }
     }
 
+    pub fn force_delete_selected(&mut self) {
+        if let Some(idx) = self.selected_session_idx() {
+            let session = &self.sessions[idx];
+            let _ = std::fs::remove_file(&session.jsonl_path);
+            let dir = session.jsonl_path.with_extension("");
+            let _ = std::fs::remove_dir_all(&dir);
+            self.status_msg = Some("Session deleted.".to_string());
+            // Reload current view
+            match &self.view {
+                View::RecentSessions => self.load_all_sessions(),
+                View::SessionList { project_dir, .. } => {
+                    let dir = project_dir.clone();
+                    self.load_sessions_for_project(&dir);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn toggle_view_mode(&mut self) {
         match &self.view {
             View::ProjectList => {

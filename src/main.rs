@@ -238,6 +238,7 @@ fn run_app(
                 KeyCode::Char('n') => app.new_session(),
                 KeyCode::Delete => app.delete_selected(),
                 KeyCode::Char('d') => app.delete_selected(),
+                KeyCode::Char('D') => app.force_delete_selected(),
                 KeyCode::Char('/') => {
                     match &app.view {
                         View::ProjectList
