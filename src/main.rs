@@ -145,8 +145,45 @@ fn main() -> io::Result<()> {
 
     if let Some(launch) = app.launch {
         let target_cwd = launch.cwd;
+
+        // Container-aware resume: sessions created inside a dev container record
+        // their cwd as an in-container path (/workspaces/...). That path doesn't
+        // exist on the host, so instead of cd-ing locally we locate the running
+        // dev container whose workspace mount covers it and exec Claude *inside*
+        // it via `devcontainer exec`.
+        if let Some(host_folder) = resolve_container_workspace(&target_cwd) {
+            let inner = match &launch.resume_id {
+                Some(id) => format!(
+                    "cd {} && exec claude --resume {}",
+                    sh_quote(&target_cwd),
+                    sh_quote(id)
+                ),
+                None => format!("cd {} && exec claude", sh_quote(&target_cwd)),
+            };
+            eprintln!("→ resuming inside dev container ({})", host_folder);
+            let mut cmd = Command::new("devcontainer");
+            cmd.arg("exec").arg("--workspace-folder").arg(&host_folder);
+            // Containers inherit neither COLORTERM nor TERM from the host, so
+            // Claude would render with degraded colours. Forward the host's
+            // values so truecolour carries through.
+            for var in ["TERM", "COLORTERM"] {
+                if let Ok(val) = std::env::var(var) {
+                    cmd.arg("--remote-env").arg(format!("{}={}", var, val));
+                }
+            }
+            let err = cmd.arg("bash").arg("-lc").arg(&inner).exec();
+            eprintln!("Failed to exec devcontainer: {}", err);
+            std::process::exit(1);
+        }
+
         std::env::set_current_dir(&target_cwd).unwrap_or_else(|e| {
             eprintln!("Failed to cd to {}: {}", target_cwd, e);
+            if target_cwd.starts_with("/workspaces/") {
+                eprintln!(
+                    "(this looks like a dev-container path, but no running container \
+                     mounts it — start it first, e.g. `cwt new <repo> <task>`)"
+                );
+            }
             std::process::exit(1);
         });
 
@@ -160,6 +197,57 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Single-quote a string for safe use inside a `bash -lc` command.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// If `cwd` is an in-container path served by a running dev container, return the
+/// host workspace folder (the container's `devcontainer.local_folder`) so we can
+/// `devcontainer exec` into it. Returns None for ordinary host paths.
+///
+/// Matches by finding the running dev container with the longest bind-mount
+/// Destination that is a prefix of `cwd`, so sessions in subdirectories of the
+/// workspace still resolve.
+fn resolve_container_workspace(cwd: &str) -> Option<String> {
+    if !cwd.starts_with("/workspaces/") {
+        return None;
+    }
+    let out = Command::new("docker")
+        .args(["ps", "-q", "--filter", "label=devcontainer.local_folder"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let ids = String::from_utf8_lossy(&out.stdout);
+    let mut best: Option<(usize, String)> = None;
+    for id in ids.split_whitespace() {
+        let insp = Command::new("docker")
+            .args([
+                "inspect",
+                "-f",
+                "{{range .Mounts}}{{.Source}}\t{{.Destination}}\n{{end}}",
+                id,
+            ])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&insp.stdout);
+        for line in text.lines() {
+            if let Some((src, dest)) = line.split_once('\t') {
+                let covers = !dest.is_empty()
+                    && (cwd == dest || cwd.starts_with(&format!("{}/", dest)));
+                if covers
+                    && best.as_ref().map_or(true, |(len, _)| dest.len() > *len)
+                {
+                    best = Some((dest.len(), src.to_string()));
+                }
+            }
+        }
+    }
+    best.map(|(_, src)| src)
 }
 
 fn run_app(
