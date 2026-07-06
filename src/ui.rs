@@ -219,7 +219,9 @@ fn draw_session_items(
     }
 
     let width = area.width as usize;
-    let fixed_cols = 42;
+    // Fixed prefix = 42 cols (ts + msgs + size + sid) + 2 trailing spaces,
+    // plus a 1-col safety margin so the last column never wraps.
+    let fixed_cols = 45;
     let remaining = width.saturating_sub(fixed_cols);
 
     let (proj_width, msg_width) = if show_project {
@@ -236,8 +238,6 @@ fn draw_session_items(
         .enumerate()
         .map(|(i, &idx)| {
             let s = &app.sessions[idx];
-            let msg_display: String =
-                s.first_msg.chars().take(msg_width).collect();
             let project_col = if show_project {
                 let label: String = if s.cwd.chars().count() > proj_width {
                     let skip = s.cwd.chars().count().saturating_sub(proj_width - 2);
@@ -249,21 +249,50 @@ fn draw_session_items(
             } else {
                 String::new()
             };
-            let content = format!(
-                "{:<10}  {:>3} msgs  {:>7}  {:<8}{}  {}",
+            let prefix = format!(
+                "{:<10}  {:>4} msgs  {:>9}  {:<8}{}  ",
                 s.last_ts_ago,
                 s.total_msgs,
                 s.file_size,
                 &s.session_id[..8.min(s.session_id.len())],
                 project_col,
-                msg_display
             );
-            let style = if i + header_rows == app.selected {
+            let selected = i + header_rows == app.selected;
+            let base_style = if selected {
                 Style::default().fg(BLUE).bg(SURFACE)
             } else {
                 Style::default().fg(TEXT)
             };
-            ListItem::new(content).style(style)
+
+            let line = if let Some(title) = &s.title {
+                // Human-named sessions stand out: ★ marker + bold yellow title.
+                let title_display: String = format!("\u{2605} {}", title)
+                    .chars()
+                    .take(msg_width)
+                    .collect();
+                let title_style = if selected {
+                    Style::default()
+                        .fg(YELLOW)
+                        .bg(SURFACE)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
+                };
+                Line::from(vec![
+                    Span::styled(prefix, base_style),
+                    Span::styled(title_display, title_style),
+                ])
+            } else {
+                // Fall back to the AI-generated title, then the first message.
+                let label = s.ai_title.as_deref().unwrap_or(&s.first_msg);
+                let label_display: String =
+                    label.chars().take(msg_width).collect();
+                Line::from(vec![Span::styled(
+                    format!("{}{}", prefix, label_display),
+                    base_style,
+                )])
+            };
+            ListItem::new(line)
         })
         .collect();
 

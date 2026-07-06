@@ -100,6 +100,16 @@ impl App {
                             || s.first_msg.to_lowercase().contains(&query)
                             || s.session_id.to_lowercase().contains(&query)
                             || s.cwd.to_lowercase().contains(&query)
+                            || s
+                                .title
+                                .as_deref()
+                                .map(|t| t.to_lowercase().contains(&query))
+                                .unwrap_or(false)
+                            || s
+                                .ai_title
+                                .as_deref()
+                                .map(|t| t.to_lowercase().contains(&query))
+                                .unwrap_or(false)
                     })
                     .map(|(i, _)| i)
                     .collect();

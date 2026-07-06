@@ -16,6 +16,8 @@ pub struct Project {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionInfo {
     pub session_id: String,
+    pub title: Option<String>,
+    pub ai_title: Option<String>,
     pub first_msg: String,
     pub first_ts: String,
     pub last_ts: String,
@@ -93,6 +95,18 @@ pub fn time_ago_from_iso(ts: &str) -> String {
             }
         }
     }
+}
+
+/// Parse an ISO-8601 timestamp into epoch seconds for sorting.
+/// Returns 0 for empty/unparseable values so they sort to the bottom.
+pub fn iso_to_epoch(ts: &str) -> i64 {
+    if ts.is_empty() {
+        return 0;
+    }
+    let ts_clean = ts.replace("Z", "+00:00");
+    DateTime::parse_from_rfc3339(&ts_clean)
+        .map(|dt| dt.with_timezone(&Utc).timestamp())
+        .unwrap_or(0)
 }
 
 fn fmt_size(bytes: u64) -> String {
@@ -206,6 +220,8 @@ pub fn scan_session(path: &Path) -> SessionInfo {
     let mut last_ts = String::new();
     let mut cwd = String::new();
     let mut model = String::new();
+    let mut title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
     let mut user_count = 0usize;
     let mut asst_count = 0usize;
     let mut user_messages: Vec<String> = Vec::new();
@@ -263,6 +279,29 @@ pub fn scan_session(path: &Path) -> SessionInfo {
                         }
                     }
                 }
+                // Human-set session name (via /rename). Distinct from the
+                // auto-generated "ai-title"; re-appended each save, so the
+                // last non-empty one wins.
+                "custom-title" => {
+                    if let Some(t) = obj.get("customTitle").and_then(|v| v.as_str()) {
+                        let clean = t.replace('\n', " ").replace('\t', " ");
+                        let trimmed = clean.trim();
+                        if !trimmed.is_empty() {
+                            title = Some(trimmed.to_string());
+                        }
+                    }
+                }
+                // Auto-generated title; used as a fallback label when there is
+                // no human-set custom title.
+                "ai-title" => {
+                    if let Some(t) = obj.get("aiTitle").and_then(|v| v.as_str()) {
+                        let clean = t.replace('\n', " ").replace('\t', " ");
+                        let trimmed = clean.trim();
+                        if !trimmed.is_empty() {
+                            ai_title = Some(trimmed.to_string());
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -283,6 +322,8 @@ pub fn scan_session(path: &Path) -> SessionInfo {
 
     SessionInfo {
         session_id: sid,
+        title,
+        ai_title,
         first_msg: if first_msg.is_empty() {
             "(no message)".to_string()
         } else {
@@ -310,21 +351,18 @@ pub fn scan_session(path: &Path) -> SessionInfo {
 
 pub fn list_sessions(proj_path: &Path) -> Vec<SessionInfo> {
     let pattern = format!("{}/*.jsonl", proj_path.display());
-    let mut files: Vec<PathBuf> = glob::glob(&pattern)
+    let files: Vec<PathBuf> = glob::glob(&pattern)
         .ok()
         .map(|g| g.flatten().collect())
         .unwrap_or_default();
 
-    files.sort_by_key(|p| {
-        Reverse(
-            p.metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(std::time::UNIX_EPOCH),
-        )
-    });
+    let mut sessions: Vec<SessionInfo> =
+        files.iter().map(|p| scan_session(p)).collect();
 
-    files.iter().map(|p| scan_session(p)).collect()
+    // Sort by actual last activity (last message timestamp), matching the
+    // displayed time column, rather than file mtime.
+    sessions.sort_by_key(|s| Reverse(iso_to_epoch(&s.last_ts)));
+    sessions
 }
 
 pub fn list_all_sessions() -> Vec<SessionInfo> {
@@ -333,7 +371,7 @@ pub fn list_all_sessions() -> Vec<SessionInfo> {
         return vec![];
     };
 
-    let mut all: Vec<(f64, PathBuf)> = Vec::new();
+    let mut all: Vec<PathBuf> = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -342,31 +380,21 @@ pub fn list_all_sessions() -> Vec<SessionInfo> {
         }
         let pattern = format!("{}/*.jsonl", path.display());
         if let Ok(files) = glob::glob(&pattern) {
-            for file in files.flatten() {
-                let mtime = file
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(|t| {
-                        t.duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs_f64()
-                    })
-                    .unwrap_or(0.0);
-                all.push((mtime, file));
-            }
+            all.extend(files.flatten());
         }
     }
 
-    all.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    all.iter()
-        .map(|(_, p)| scan_session(p))
+    let mut sessions: Vec<SessionInfo> = all
+        .iter()
+        .map(|p| scan_session(p))
         .filter(|s| s.total_msgs > 0)
-        .collect()
+        .collect();
+
+    // Sort by actual last activity (last message timestamp), matching the
+    // displayed time column. File mtime is unreliable — it gets bumped by
+    // title generation, mode changes, and resume without new messages.
+    sessions.sort_by_key(|s| Reverse(iso_to_epoch(&s.last_ts)));
+    sessions
 }
 
 pub fn cwd_to_project_dir(cwd: &str) -> Option<String> {
