@@ -28,6 +28,10 @@ struct Cli {
     #[arg(short, long, value_name = "ID")]
     id: Option<String>,
 
+    /// Start in the folder browser (cwd's project if there is one) instead of Recent
+    #[arg(short, long)]
+    folders: bool,
+
     /// Bare argument: treated as session ID fragment or search query
     #[arg(value_name = "QUERY")]
     query: Option<String>,
@@ -104,7 +108,7 @@ fn main() -> io::Result<()> {
             app.filtering = true;
             app.rebuild_filtered();
         }
-    } else {
+    } else if cli.folders {
         let cwd = std::env::current_dir()
             .unwrap_or_default()
             .to_string_lossy()
@@ -125,6 +129,11 @@ fn main() -> io::Result<()> {
         } else {
             app.load_projects();
         }
+    } else {
+        // Recent is the default: a flat, cross-project list sorted by last
+        // activity. Tab switches to the folder browser.
+        app.view = View::RecentSessions;
+        app.load_all_sessions();
     }
 
     // Setup terminal

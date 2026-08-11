@@ -8,8 +8,8 @@ Browse, search, and resume your Claude Code sessions from the terminal.
 
 ## Features
 
-- **Browse by project** — sessions grouped by working directory
-- **Recent view** — flat list of all sessions sorted by last activity
+- **Recent view (default)** — flat list of all sessions sorted by last activity
+- **Browse by project** — sessions grouped by working directory (`Tab`, or `--folders`)
 - **Fuzzy filter** — type `/` to filter by message content, session ID, or path
 - **Session details** — model, message counts, timestamps, file size
 - **Conversation viewer** — read the full conversation in-terminal
@@ -47,7 +47,8 @@ cp claude-continue.sh ~/.local/bin/claude-continue
 ## Usage
 
 ```
-claude-continue              # interactive browser (scoped to cwd if applicable)
+claude-continue              # recent sessions across all projects (default)
+claude-continue --folders    # folder browser (scoped to cwd's project if applicable)
 claude-continue --search     # search all sessions
 claude-continue --search foo # search with initial query
 claude-continue --id abc123  # look up session by ID fragment
